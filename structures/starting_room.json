@@ -1,0 +1,14 @@
+{
+  "name": "starting_room",
+  "legend": {"#": "cell", "A": "anchor", "G": "gate",".": "air"},
+  "preset_location": [50,50],
+  "weight": 100,
+  "root_making": true,
+  "grid": [
+    "##G##",
+    "#####",
+    "G#A#G",
+    "#####",
+    "##G##"
+  ]
+}

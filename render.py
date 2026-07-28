@@ -14,6 +14,13 @@ AXIS_COLOR = QColor("#6c6c78")
 EMPTY_DOT_COLOR = QColor("#8a8a94")
 DEAD_CELL_COLOR = QColor("#ff2020")
 
+# fixed colors for structure-reserved cell ids (STRUCT_CELL_TYPES in main.py)
+STRUCT_ID_COLORS = {
+    -2: QColor("#c8c8c8"),  # cell -> light grey
+    -3: QColor("#ff6ec7"),  # gate -> pink
+    -4: QColor("#8cff6e"),  # anchor -> lime
+}
+
 _GRADIENT_PALETTES = [
     [(0.0, QColor("#4f7fd6")), (0.33, QColor("#7b4fd6")), (0.66, QColor("#d64f9f")), (1.0, QColor("#ff8c42"))],
     [(0.0, QColor("#3fae6b")), (0.33, QColor("#8fc93a")), (0.66, QColor("#e0d030")), (1.0, QColor("#f0a020"))],
@@ -89,6 +96,18 @@ def _palette_for_pass(pass_name):
     return _GRADIENT_PALETTES[_palette_index]
 
 
+def _color_for_cell(c, max_id, palette):
+    if c.id == -1:
+        return DEAD_END_COLOR
+    if c.id in STRUCT_ID_COLORS:
+        return STRUCT_ID_COLORS[c.id]
+    if c.id in _color_cache:
+        return _color_cache[c.id]
+    color = _gradient(c.id / max_id, palette)
+    _color_cache[c.id] = color
+    return color
+
+
 class EmptyDotItem(QGraphicsEllipseItem):
     def __init__(self, x, y, radius, view):
         super().__init__(-radius, -radius, radius * 2, radius * 2)
@@ -118,12 +137,16 @@ class NodeItem(QGraphicsEllipseItem):
         self.setZValue(2)
 
     def hoverEnterEvent(self, event):
+        customData_html = "<br>".join(f"{k}: {v}" for k, v in self.cell.customData.items()) or "-"
         self.view.set_panel_text(
             f"<b style='color:#ff9f5a'>cell</b><br>"
             f"id: {self.cell.id}<br>"
+            f"hash: {self.cell.hash}<br>"
             f"pos: {self.cell.pos}<br>"
             f"placed: {self.cell.placed}<br>"
-            f"connections: {len(self.cell.connections)}"
+            f"connections: {len(self.cell.connections)}<br>"
+            f"<b style='color:#ff9f5a'>customData</b><br>"
+            f"{customData_html}"
         )
         super().hoverEnterEvent(event)
 
@@ -222,7 +245,7 @@ def render_graph(grid, size, cell_size=60, node_radius_ratio=0.32, dead_list=Non
 
     scene = QGraphicsScene()
     placed = [c for row in grid for c in row if c.placed]
-    max_id = max((c.id for c in placed if c.id != -1), default=1) or 1
+    max_id = max((c.id for c in placed if c.id not in (-1, -2, -3, -4)), default=1) or 1
     radius = cell_size * node_radius_ratio
 
     view = DungeonView(scene, cell_size)
@@ -261,13 +284,7 @@ def render_graph(grid, size, cell_size=60, node_radius_ratio=0.32, dead_list=Non
     label_font = QFont("monospace", 8)
     for c in placed:
         x, y = c.pos
-        if c.id == -1:
-            color = DEAD_END_COLOR
-        elif c.id in _color_cache:
-            color = _color_cache[c.id]
-        else:
-            color = _gradient(c.id / max_id, palette)
-            _color_cache[c.id] = color
+        color = _color_for_cell(c, max_id, palette)
         node = NodeItem(c, radius, view)
         node.setPos(x * cell_size, y * cell_size)
         node.setBrush(QBrush(color))
