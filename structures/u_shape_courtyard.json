@@ -1,0 +1,14 @@
+{
+  "name": "u_shape_courtyard",
+  "legend": {"#": "cell", "A": "anchor", "G": "gate", ".": "air"},
+  "preset_location": [],
+  "weight": 20,
+  "root_making": false,
+  "grid": [
+    "G#...#G",
+    "##...##",
+    "##...##",
+    "##.A.##",
+    "#######"
+  ]
+}

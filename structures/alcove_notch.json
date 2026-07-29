@@ -1,0 +1,14 @@
+{
+  "name": "alcove_notch",
+  "legend": {"#": "cell", "A": "anchor", "G": "gate", ".": "air"},
+  "preset_location": [],
+  "weight": 35,
+  "root_making": false,
+  "grid": [
+    "#####",
+    "#...#",
+    "#.A.G",
+    "#...#",
+    "#####"
+  ]
+}

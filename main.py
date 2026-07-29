@@ -1,5 +1,7 @@
 import copy
 import random
+from asyncio import futures
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
@@ -10,6 +12,7 @@ from logger import setup_logging, get_logger
 
 setup_logging()
 log_assets = get_logger("Assets", "Loader")
+log_struct = get_logger("Generation","StructurePlacer")
 log_snake = get_logger("Generation", "SnakePass")
 log_tree = get_logger("Generation", "TreePass")
 log_loop = get_logger("Generation", "LoopPass")
@@ -41,7 +44,7 @@ class Structure:
 
 STRUCT_CELL_TYPES = {"air": Cell(),
                      "cell": Cell(id=-2, placed=True, customData={"reserved": True}),
-                     "gate": Cell(id=-3, placed=True, customData={"reserved": True, "isGate": True}),
+                     "gate": Cell(id=-3, placed=True, customData={ "isGate": True}),
                      "anchor": Cell(id=-4, placed=True, customData={"reserved": True, "isAnchor": True})}
 structureSet = []
 
@@ -71,8 +74,7 @@ def GenerateStructureData(structureDir: Path):
             newStructGrid = [[Cell() for _ in range(len(jsonGrid[0]))] for _ in range(len(jsonGrid))]
             for y, row in enumerate(jsonGrid):
                 for x, cell in enumerate(row):
-                    newStructCell = copy.deepcopy(STRUCT_CELL_TYPES.get(legend[cell], STRUCT_CELL_TYPES["cell"]))
-                    newStructCell.customData["structName"] = data["name"]
+                    newStructCell = STRUCT_CELL_TYPES.get(legend[cell], STRUCT_CELL_TYPES["cell"])
                     newStructGrid[y][x] = newStructCell
             log_assets.debug("generated structure tile list")
             newStruct.grid = newStructGrid
@@ -81,9 +83,9 @@ def GenerateStructureData(structureDir: Path):
         except Exception as e:
             log_assets.warning(f"struct generation failed for {file.name}, reason: {e}")
 
-def StructurePlacer(structureFrequency: int = 30):
-    structureToPlace: Structure = structureSet[0]
-    structPos = structureToPlace.pos
+def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)):
+    structPos = structureToPlace.pos if structureToPlace.explicitPlacing else pos
+    log_struct.info(f"placing structure: {structureToPlace.name}, at position: {structPos}")
 
     anchorLocal = (0, 0)
     for y, row in enumerate(structureToPlace.grid):
@@ -95,14 +97,42 @@ def StructurePlacer(structureFrequency: int = 30):
         for x, cell in enumerate(row):
             worldX = structPos[0] + (x - anchorLocal[0])
             worldY = structPos[1] + (y - anchorLocal[1])
-            cell.pos = (worldX, worldY)
-            cell.hash = MakeHash()
-            grid[worldY][worldX] = cell
+            cellToUse = deepcopy(cell)
+            cellToUse.pos = (worldX, worldY)
+            cellToUse.hash = MakeHash()
+            cellToUse.customData["name"] = structureToPlace.name
+            grid[worldY][worldX] = cellToUse
 
-        
+def StructurePass(emptyChance:int = 20, structureAmount:int = 10):
+    weightList = {s.name: s.weight for s in structureSet if not s.explicitPlacing}
+    weightList["nothing"] = emptyChance
+    totalWeights = sum(weightList.values())
 
-def SnakePass(starting_point, steps, give_up_on_backtrack_threshold, give_up_instead_of_cut: bool = False,
-              give_up_instead_of_backtrack: bool = False):
+    for structureIndex in range(structureAmount):
+        chosenStructure = structureSet[0]
+
+        roll = random.randint(0,totalWeights)
+        cumulative = 0
+        futureName = ""
+        for name , weight in weightList.items():
+            cumulative += weight
+            if roll <= cumulative:
+                futureName = name
+                break
+
+        if futureName == "nothing":
+            log_struct.info("skipped!!!!")
+            continue
+
+        chosenStructure = next(s for s in structureSet if s.name == futureName)
+
+
+        unplaced = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row) if not cell.placed]
+        randX, randY = random.choice(unplaced)
+        log_struct.info(f"placed {futureName} at: {randX}{randY}")
+        PlaceStructure(chosenStructure, (randX,randY))
+
+def SnakePass(starting_point, steps, give_up_on_backtrack_threshold, give_up_instead_of_cut: bool = False,give_up_instead_of_backtrack: bool = False):
     roomStack = Stack()
     roomStack.pushEnd(starting_point)
 
@@ -184,12 +214,10 @@ def SnakePass(starting_point, steps, give_up_on_backtrack_threshold, give_up_ins
         log_snake.debug(f"generated cycle: {attempts}")
     return True
 
-
-def TreePass(branchGridSweeps: int = 2, branchCount: int = 10, give_up_on_backtrack_threshold: int = 1000,
-             branch_step_range: tuple[int, int] = (5, 25)):
+def TreePass(branchGridSweeps: int = 2, branchCount: int = 10, give_up_on_backtrack_threshold: int = 1000, branch_step_range: tuple[int, int] = (5, 25)):
     log_tree.info(f"starting tree pass, sweeps={branchGridSweeps}, branches={branchCount}")
     for sweep in range(0, branchGridSweeps):
-        placed_cells = [cell for row in grid for cell in row if cell.placed]
+        placed_cells = [cell for row in grid for cell in row if cell.placed and not "reserved" in cell.customData]
         if not placed_cells:
             return
 
@@ -256,7 +284,6 @@ def LoopPass(loopGridSweeps: int = 2, loopGenerationChance: int = 2):
             log_loop.debug(f"placed and connected: {loopCandidate.pos}, {otherCell.pos}")
     log_loop.info("loop pass complete")
 
-
 def Gen(seed: int = random.randint(0, 255), structurePath:Path=Path(f"{PROJECT_ROOT}/structures"),
         snakeSteps: int = 100, startingPoint: tuple[int, int] = (center, center),
         attemptsBeforeBacktrackGiveUp: int = 1000, noTailCutting: bool = False, noBacktracking: bool = False,
@@ -265,27 +292,28 @@ def Gen(seed: int = random.randint(0, 255), structurePath:Path=Path(f"{PROJECT_R
     random.seed(seed)
 
     GenerateStructureData(structurePath)
-    StructurePlacer()
+    PlaceStructure(next(s for s in structureSet if s.name == "starting_room"))
+    StructurePass(structureAmount=10)
     render(grid, size, pass_name="Struct Pass")
-    # log_main.info(f"starting generation with seed: {seed}")
-    # grid[startingPoint[0]][startingPoint[1]] = Cell(id=-1, placed=True, pos=(center, center), hash=MakeHash())
-    # status = SnakePass(starting_point=grid[startingPoint[0]][startingPoint[1]],
-    #                    steps=snakeSteps,
-    #                    give_up_on_backtrack_threshold=attemptsBeforeBacktrackGiveUp,
-    #                    give_up_instead_of_cut=noTailCutting,
-    #                    give_up_instead_of_backtrack=noBacktracking
-    #                    )
-    # log_main.info(f"initial snake pass complete: {'step target reached' if status else 'failed to reach step target'}")
-    # render(grid, size, pass_name="Snake Pass")
-    # TreePass(branchGridSweeps=branchingGridSweeps,
-    #          branchCount=branchCount,
-    #          give_up_on_backtrack_threshold=branchingAttemptsBeforeBacktrackGiveUpOverride,
-    #          branch_step_range=branch_step_range
-    #          )
-    # render(grid, size, pass_name="Tree Pass")
-    # LoopPass()
-    # render(grid, size, pass_name="Loop Pass")
-    # log_main.info("generation finished")
+    log_main.info(f"starting generation with seed: {seed}")
+    grid[startingPoint[0]][startingPoint[1]] = Cell(id=-1, placed=True, pos=(center, center), hash=MakeHash())
+    status = SnakePass(starting_point=grid[startingPoint[0]][startingPoint[1]],
+                       steps=snakeSteps,
+                       give_up_on_backtrack_threshold=attemptsBeforeBacktrackGiveUp,
+                       give_up_instead_of_cut=noTailCutting,
+                       give_up_instead_of_backtrack=noBacktracking
+                       )
+    log_main.info(f"initial snake pass complete: {'step target reached' if status else 'failed to reach step target'}")
+    render(grid, size, pass_name="Snake Pass")
+    TreePass(branchGridSweeps=branchingGridSweeps,
+             branchCount=branchCount,
+             give_up_on_backtrack_threshold=branchingAttemptsBeforeBacktrackGiveUpOverride,
+             branch_step_range=branch_step_range
+             )
+    render(grid, size, pass_name="Tree Pass")
+    LoopPass()
+    render(grid, size, pass_name="Loop Pass")
+    log_main.info("generation finished")
 
 
 Gen(snakeSteps=500, attemptsBeforeBacktrackGiveUp=10000, branchCount=25, branchingGridSweeps=2,branch_step_range=(50, 100))
