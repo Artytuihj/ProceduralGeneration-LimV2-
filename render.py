@@ -1,3 +1,8 @@
+##################
+#1
+# This file was fully writen by claude couse i didnt bother
+#3
+################
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsView, QGraphicsScene, QGraphicsEllipseItem,

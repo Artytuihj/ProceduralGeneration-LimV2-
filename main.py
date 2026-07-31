@@ -1,10 +1,10 @@
-import copy
+from __future__ import annotations
 import random
-from asyncio import futures
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+
 
 from render import render
 from stack import Stack
@@ -37,6 +37,7 @@ class Structure:
     name: str = ""
     explicitPlacing: bool = False
     pos: tuple[int, int] = (0, 0)
+    size:tuple[int, int] = (0, 0)
     rotation: int = 0
     weight: int = 0
     grid: list[list[Cell]] = field(default_factory=list)
@@ -78,12 +79,19 @@ def GenerateStructureData(structureDir: Path):
                     newStructGrid[y][x] = newStructCell
             log_assets.debug("generated structure tile list")
             newStruct.grid = newStructGrid
+            newStruct.size = (len(newStruct.grid)-1,len(newStruct.grid[0])-1)
             structureSet.append(newStruct)
             log_assets.info(f"loaded structure: {data['name']}")
         except Exception as e:
             log_assets.warning(f"struct generation failed for {file.name}, reason: {e}")
 
-def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)):
+def aabb_overlap(a :Structure,b :Structure):
+    return (a.pos[0] < b.pos[0] + b.size[0] and a.pos[0] + a.size[0] > b.pos[0]) and (a.pos[1] < b.pos[1] + b.size[1] and a.pos[1] + a.size[1] > b.pos[1])
+
+def in_bound(a :Structure):
+    return a.pos[0] >= 0 and a.pos[1] >= 0 and a.pos[0] + a.size[0] <= size and a.pos[1] + a.pos[1] <= size
+
+def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)) -> bool:
     structPos = structureToPlace.pos if structureToPlace.explicitPlacing else pos
     log_struct.info(f"placing structure: {structureToPlace.name}, at position: {structPos}")
 
@@ -101,9 +109,13 @@ def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)):
             cellToUse.pos = (worldX, worldY)
             cellToUse.hash = MakeHash()
             cellToUse.customData["name"] = structureToPlace.name
-            grid[worldY][worldX] = cellToUse
+            if in_bound(structureToPlace):
+                grid[worldY][worldX] = cellToUse
+            else:
+                return False
+            return True
 
-def StructurePass(emptyChance:int = 20, structureAmount:int = 10):
+def StructurePass(emptyChance:int = 20, structureAmount:int = 10, placingRetryAttempts:int=10):
     weightList = {s.name: s.weight for s in structureSet if not s.explicitPlacing}
     weightList["nothing"] = emptyChance
     totalWeights = sum(weightList.values())
@@ -130,7 +142,13 @@ def StructurePass(emptyChance:int = 20, structureAmount:int = 10):
         unplaced = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row) if not cell.placed]
         randX, randY = random.choice(unplaced)
         log_struct.info(f"placed {futureName} at: {randX}{randY}")
-        PlaceStructure(chosenStructure, (randX,randY))
+        for i in range(placingRetryAttempts):
+            status = PlaceStructure(chosenStructure, (randX,randY))
+            if status:
+                structureIndex -= 1
+                continue
+            else:
+                continue
 
 def SnakePass(starting_point, steps, give_up_on_backtrack_threshold, give_up_instead_of_cut: bool = False,give_up_instead_of_backtrack: bool = False):
     roomStack = Stack()
@@ -220,7 +238,6 @@ def TreePass(branchGridSweeps: int = 2, branchCount: int = 10, give_up_on_backtr
         placed_cells = [cell for row in grid for cell in row if cell.placed and not "reserved" in cell.customData]
         if not placed_cells:
             return
-
         for i in range(branchCount):
             start = random.choice(placed_cells)
             SnakePass(
@@ -292,9 +309,9 @@ def Gen(seed: int = random.randint(0, 255), structurePath:Path=Path(f"{PROJECT_R
     random.seed(seed)
 
     GenerateStructureData(structurePath)
-    PlaceStructure(next(s for s in structureSet if s.name == "starting_room"))
-    StructurePass(structureAmount=10)
-    render(grid, size, pass_name="Struct Pass")
+    #PlaceStructure(next(s for s in structureSet if s.name == "starting_room"))
+    #StructurePass(structureAmount=10) #TODO fix ts
+    #render(grid, size, pass_name="Struct Pass")
     log_main.info(f"starting generation with seed: {seed}")
     grid[startingPoint[0]][startingPoint[1]] = Cell(id=-1, placed=True, pos=(center, center), hash=MakeHash())
     status = SnakePass(starting_point=grid[startingPoint[0]][startingPoint[1]],
@@ -316,4 +333,4 @@ def Gen(seed: int = random.randint(0, 255), structurePath:Path=Path(f"{PROJECT_R
     log_main.info("generation finished")
 
 
-Gen(snakeSteps=500, attemptsBeforeBacktrackGiveUp=10000, branchCount=25, branchingGridSweeps=2,branch_step_range=(50, 100))
+Gen(snakeSteps=200, attemptsBeforeBacktrackGiveUp=1000, branchCount=25, branchingGridSweeps=2,branch_step_range=(50, 100))
