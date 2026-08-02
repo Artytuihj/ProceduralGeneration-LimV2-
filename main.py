@@ -29,7 +29,6 @@ class Cell:
     placed: bool = False
     customData: dict = field(default_factory=dict)
 
-
 DIR_VECTORS = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
 
 @dataclass
@@ -42,12 +41,12 @@ class Structure:
     weight: int = 0
     grid: list[list[Cell]] = field(default_factory=list)
 
-
 STRUCT_CELL_TYPES = {"air": Cell(),
                      "cell": Cell(id=-2, placed=True, customData={"reserved": True}),
                      "gate": Cell(id=-3, placed=True, customData={ "isGate": True}),
                      "anchor": Cell(id=-4, placed=True, customData={"reserved": True, "isAnchor": True})}
 structureSet = []
+placedStructures = []
 
 size = 100
 center = round(size / 2)
@@ -56,7 +55,6 @@ grid = [[Cell() for _ in range(size)] for _ in range(size)]
 
 def MakeHash() -> int:
     return random.getrandbits(255)
-
 
 def GenerateStructureData(structureDir: Path):
     log_assets.info(f"loading structure files from {structureDir}")
@@ -79,27 +77,45 @@ def GenerateStructureData(structureDir: Path):
                     newStructGrid[y][x] = newStructCell
             log_assets.debug("generated structure tile list")
             newStruct.grid = newStructGrid
-            newStruct.size = (len(newStruct.grid)-1,len(newStruct.grid[0])-1)
+            newStruct.size = (len(newStruct.grid[0]), len(newStruct.grid))
             structureSet.append(newStruct)
             log_assets.info(f"loaded structure: {data['name']}")
         except Exception as e:
             log_assets.warning(f"struct generation failed for {file.name}, reason: {e}")
 
-def aabb_overlap(a :Structure,b :Structure):
-    return (a.pos[0] < b.pos[0] + b.size[0] and a.pos[0] + a.size[0] > b.pos[0]) and (a.pos[1] < b.pos[1] + b.size[1] and a.pos[1] + a.size[1] > b.pos[1])
 
-def in_bound(a :Structure):
-    return a.pos[0] >= 0 and a.pos[1] >= 0 and a.pos[0] + a.size[0] <= size and a.pos[1] + a.pos[1] <= size
+def get_anchor_offset(s: Structure) -> tuple[int, int]:
+    for y, row in enumerate(s.grid):
+        for x, cell in enumerate(row):
+            if cell.customData.get("isAnchor"):
+                return (x, y)
+    return (0, 0)
 
-def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)) -> bool:
+def aabb_overlap(a: Structure, b: Structure, pad: int):
+    aax, aay = get_anchor_offset(a)
+    bax, bay = get_anchor_offset(b)
+
+    aMinX, aMinY = a.pos[0] - aax, a.pos[1] - aay
+    aMaxX, aMaxY = aMinX + a.size[0], aMinY + a.size[1]
+
+    bMinX, bMinY = b.pos[0] - bax, b.pos[1] - bay
+    bMaxX, bMaxY = bMinX + b.size[0], bMinY + b.size[1]
+
+    return (aMinX - pad < bMaxX and aMaxX + pad > bMinX) and (aMinY - pad < bMaxY and aMaxY + pad > bMinY)
+
+def in_bound(a: Structure):
+    ax, ay = get_anchor_offset(a)
+    minX = a.pos[0] - ax
+    minY = a.pos[1] - ay
+    maxX = minX + a.size[0]
+    maxY = minY + a.size[1]
+    return minX >= 0 and minY >= 0 and maxX <= size and maxY <= size
+
+def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)):
     structPos = structureToPlace.pos if structureToPlace.explicitPlacing else pos
     log_struct.info(f"placing structure: {structureToPlace.name}, at position: {structPos}")
 
-    anchorLocal = (0, 0)
-    for y, row in enumerate(structureToPlace.grid):
-        for x, cell in enumerate(row):
-            if cell.customData.get("isAnchor"):
-                anchorLocal = (x, y)
+    anchorLocal = get_anchor_offset(structureToPlace)
 
     for y, row in enumerate(structureToPlace.grid):
         for x, cell in enumerate(row):
@@ -109,20 +125,21 @@ def PlaceStructure(structureToPlace: Structure, pos:tuple[int,int] = (0,0)) -> b
             cellToUse.pos = (worldX, worldY)
             cellToUse.hash = MakeHash()
             cellToUse.customData["name"] = structureToPlace.name
-            if in_bound(structureToPlace):
-                grid[worldY][worldX] = cellToUse
-            else:
-                return False
-            return True
+            grid[worldY][worldX] = cellToUse
+    placedStructures.append(structureToPlace)
 
-def StructurePass(emptyChance:int = 20, structureAmount:int = 10, placingRetryAttempts:int=10):
+def StructurePass(emptyChance:int = 20, structureAmount:int = 10, structurePadding:int = 1):
     weightList = {s.name: s.weight for s in structureSet if not s.explicitPlacing}
     weightList["nothing"] = emptyChance
     totalWeights = sum(weightList.values())
 
-    for structureIndex in range(structureAmount):
-        chosenStructure = structureSet[0]
+    for i, s in enumerate(structureSet):
+        if s.explicitPlacing:
+            PlaceStructure(s)
 
+    structureIndex = 0
+
+    while structureIndex < structureAmount:
         roll = random.randint(0,totalWeights)
         cumulative = 0
         futureName = ""
@@ -134,21 +151,32 @@ def StructurePass(emptyChance:int = 20, structureAmount:int = 10, placingRetryAt
 
         if futureName == "nothing":
             log_struct.info("skipped!!!!")
+            structureIndex -= 1
             continue
 
-        chosenStructure = next(s for s in structureSet if s.name == futureName)
-
+        chosenStructure:Structure = deepcopy(next(s for s in structureSet if s.name == futureName))
 
         unplaced = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row) if not cell.placed]
-        randX, randY = random.choice(unplaced)
-        log_struct.info(f"placed {futureName} at: {randX}{randY}")
-        for i in range(placingRetryAttempts):
-            status = PlaceStructure(chosenStructure, (randX,randY))
-            if status:
-                structureIndex -= 1
-                continue
-            else:
-                continue
+        randY, randX = random.choice(unplaced)
+        chosenStructure.pos = (randX,randY)
+
+        if not in_bound(chosenStructure):
+            structureIndex -= 1
+            continue
+
+        overlaps = False
+        for s in placedStructures:
+            if aabb_overlap(chosenStructure, s, structurePadding):
+                overlaps = True
+                break
+
+        if overlaps:
+            structureIndex -= 1
+            continue
+
+        log_struct.info(f"placed {futureName} at: {randX}, {randY}")
+        PlaceStructure(chosenStructure, (randX,randY))
+        structureIndex += 1
 
 def SnakePass(starting_point, steps, give_up_on_backtrack_threshold, give_up_instead_of_cut: bool = False,give_up_instead_of_backtrack: bool = False):
     roomStack = Stack()
@@ -263,6 +291,9 @@ def LoopPass(loopGridSweeps: int = 2, loopGenerationChance: int = 2):
             if len(loopCandidate.connections) >= 4:
                 continue
 
+            if "reserved" in loopCandidate.customData:
+                continue
+
             log_loop.debug(f"cell selected for loopback: {loopCandidate.pos}")
 
             possibleDirections = []
@@ -275,6 +306,9 @@ def LoopPass(loopGridSweeps: int = 2, loopGenerationChance: int = 2):
 
                 tempCell = grid[tempCellPos[1]][tempCellPos[0]]
                 if not tempCell.placed:
+                    continue
+
+                if "reserved" in tempCell.customData:
                     continue
 
                 if tempCell in loopCandidate.connections or loopCandidate in tempCell.connections:
@@ -309,28 +343,28 @@ def Gen(seed: int = random.randint(0, 255), structurePath:Path=Path(f"{PROJECT_R
     random.seed(seed)
 
     GenerateStructureData(structurePath)
-    #PlaceStructure(next(s for s in structureSet if s.name == "starting_room"))
-    #StructurePass(structureAmount=10) #TODO fix ts
-    #render(grid, size, pass_name="Struct Pass")
-    log_main.info(f"starting generation with seed: {seed}")
-    grid[startingPoint[0]][startingPoint[1]] = Cell(id=-1, placed=True, pos=(center, center), hash=MakeHash())
-    status = SnakePass(starting_point=grid[startingPoint[0]][startingPoint[1]],
-                       steps=snakeSteps,
-                       give_up_on_backtrack_threshold=attemptsBeforeBacktrackGiveUp,
-                       give_up_instead_of_cut=noTailCutting,
-                       give_up_instead_of_backtrack=noBacktracking
-                       )
-    log_main.info(f"initial snake pass complete: {'step target reached' if status else 'failed to reach step target'}")
-    render(grid, size, pass_name="Snake Pass")
-    TreePass(branchGridSweeps=branchingGridSweeps,
-             branchCount=branchCount,
-             give_up_on_backtrack_threshold=branchingAttemptsBeforeBacktrackGiveUpOverride,
-             branch_step_range=branch_step_range
-             )
-    render(grid, size, pass_name="Tree Pass")
-    LoopPass()
-    render(grid, size, pass_name="Loop Pass")
-    log_main.info("generation finished")
+    StructurePass(structureAmount=10)
+    log_main.info(placedStructures)
+    render(grid, size, pass_name="Struct Pass")
+    # log_main.info(f"starting generation with seed: {seed}")
+    # grid[startingPoint[0]][startingPoint[1]] = Cell(id=-1, placed=True, pos=(center, center), hash=MakeHash())
+    # status = SnakePass(starting_point=grid[startingPoint[0]][startingPoint[1]],
+    #                    steps=snakeSteps,
+    #                    give_up_on_backtrack_threshold=attemptsBeforeBacktrackGiveUp,
+    #                    give_up_instead_of_cut=noTailCutting,
+    #                    give_up_instead_of_backtrack=noBacktracking
+    #                    )
+    # log_main.info(f"initial snake pass complete: {'step target reached' if status else 'failed to reach step target'}")
+    # render(grid, size, pass_name="Snake Pass")
+    # TreePass(branchGridSweeps=branchingGridSweeps,
+    #          branchCount=branchCount,
+    #          give_up_on_backtrack_threshold=branchingAttemptsBeforeBacktrackGiveUpOverride,
+    #          branch_step_range=branch_step_range
+    #          )
+    # render(grid, size, pass_name="Tree Pass")
+    # LoopPass()
+    # render(grid, size, pass_name="Loop Pass")
+    # log_main.info("generation finished")
 
 
-Gen(snakeSteps=200, attemptsBeforeBacktrackGiveUp=1000, branchCount=25, branchingGridSweeps=2,branch_step_range=(50, 100))
+Gen(snakeSteps=2000, attemptsBeforeBacktrackGiveUp=1000, branchCount=25, branchingGridSweeps=2,branch_step_range=(50, 100))
